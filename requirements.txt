@@ -1,0 +1,2 @@
+# Narthex has no third-party runtime dependencies.
+# Optional development tools can be added here if needed.

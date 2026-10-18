@@ -1,0 +1,41 @@
+name: high-risk-release
+description: 高风险发布的所有节点都使用 Cathedral 审批链
+default_mode: cathedral
+governor:
+  high_risk_tags: [risk:high, risk:critical, risk:safety]
+  exploratory_tags: [risk:exploratory]
+  commit_phases: [commit, production, deploy, release, execute]
+  token_budget: 2000
+  divergence_threshold: 0.6
+  max_rounds: 2
+  consensus_threshold: 0.8
+agents:
+  engineer:
+    role: engineer
+    capabilities: [propose, execute, read]
+  verifier:
+    role: verifier
+    capabilities: [propose, approve, read]
+nodes:
+  - id: prepare
+    agent: engineer
+    phase: commit
+    risk: [risk:critical, risk:safety]
+    task: 准备安全关键变更并写入审批产物
+    capabilities: [propose, execute]
+    approval:
+      approvers: [verifier]
+      scope: [propose, execute]
+  - id: audit
+    agent: verifier
+    phase: verify
+    risk: [risk:high]
+    task: 独立核验变更范围与审批结果
+    capabilities: [propose, read]
+    approval:
+      approvers: [verifier]
+      scope: [propose, read]
+edges:
+  - from: prepare
+    to: audit
+    type: authorize

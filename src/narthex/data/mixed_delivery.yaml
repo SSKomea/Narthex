@@ -1,0 +1,88 @@
+name: mixed-delivery
+description: 先用 Bazaar 探索，再把生产变更冻结到 Cathedral 审批链
+default_mode: bazaar
+governor:
+  high_risk_tags: [risk:high, risk:critical, risk:safety]
+  exploratory_tags: [risk:exploratory, risk:low]
+  commit_phases: [commit, production, deploy, release, execute]
+  token_budget: 5000
+  divergence_threshold: 0.92
+  max_rounds: 3
+  consensus_threshold: 0.6
+agents:
+  planner:
+    role: planner
+    capabilities: [propose, consult, read]
+  researcher:
+    role: researcher
+    capabilities: [propose, consult, read]
+  critic:
+    role: critic
+    capabilities: [propose, consult, read]
+  engineer:
+    role: engineer
+    capabilities: [propose, consult, execute, read]
+  release_manager:
+    role: release_manager
+    capabilities: [propose, approve, read]
+  verifier:
+    role: verifier
+    capabilities: [propose, approve, read]
+nodes:
+  - id: brief
+    agent: planner
+    phase: explore
+    risk: [risk:exploratory]
+    task: 澄清需求、约束与成功标准
+  - id: research
+    agent: researcher
+    phase: explore
+    risk: [risk:exploratory]
+    task: 调研多个可行方案并暴露分歧
+  - id: critique
+    agent: critic
+    phase: explore
+    risk: [risk:exploratory]
+    task: 挑战隐含假设并标记回滚风险
+  - id: design
+    agent: engineer
+    phase: design
+    risk: [risk:exploratory]
+    task: 综合 Bazaar 讨论形成实施方案
+  - id: production_change
+    agent: engineer
+    phase: commit
+    risk: [risk:high, risk:safety]
+    task: 把已收敛方案提交为可审批的生产变更
+    capabilities: [propose, execute]
+    approval:
+      approvers: [release_manager]
+      scope: [propose, execute]
+  - id: verify
+    agent: verifier
+    phase: verify
+    risk: [risk:high]
+    task: 验证审批边界、写入结果与可回放性
+    capabilities: [propose, read]
+    approval:
+      approvers: [release_manager]
+      scope: [propose, read]
+edges:
+  - from: brief
+    to: research
+    type: consult
+  - from: brief
+    to: critique
+    type: consult
+  - from: research
+    to: design
+    type: consult
+  - from: critique
+    to: design
+    type: consult
+  - from: design
+    to: production_change
+    type: authorize
+  - from: production_change
+    to: verify
+    type: authorize
