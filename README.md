@@ -193,6 +193,47 @@ registry = AgentRegistry()
 registry.register(FunctionAgent(spec, propose_fn, review_fn))
 ```
 
+## 接入真实大模型（跨模型一致性）
+
+Narthex 通过 `src/narthex/llm/` 提供一层 **模型无关的 LLM 适配层**。同一个拓扑无需改动即可在 DeepSeek、Qwen、OpenAI、Ollama、vLLM 等任意 OpenAI 兼容后端之间切换，且治理行为（模式决策、共识、审批语义、Token 预算口径）保持一致：
+
+```python
+from narthex import NarthexRuntime, RuntimeOptions, build_demo_tools, build_llm_registry, load_topology
+
+topology = load_topology("examples/mixed_delivery.yaml")
+registry = build_llm_registry(topology)   # 默认读取 NARTHEX_LLM_* 环境变量
+runtime = NarthexRuntime(topology, registry, tools=build_demo_tools(),
+                         options=RuntimeOptions(run_root="runs"))
+result = runtime.run("设计一个可审计的发布流程")
+```
+
+切换后端只需改环境变量，不改代码：
+
+```powershell
+$env:NARTHEX_LLM_MODEL = "deepseek-chat"          # 不设置则使用离线确定性后端
+$env:NARTHEX_LLM_BASE_URL = "https://api.deepseek.com/v1"
+$env:NARTHEX_LLM_API_KEY = "sk-..."
+
+# 本地 Ollama
+$env:NARTHEX_LLM_MODEL = "qwen2.5:7b"
+$env:NARTHEX_LLM_BASE_URL = "http://localhost:11434/v1"
+```
+
+完整示例见 `examples/llm_agents.py`。一致性由以下机制保证：
+
+| 机制 | 实现位置 | 解决的问题 |
+| --- | --- | --- |
+| 统一提示词契约 | `llm/contracts.py` | 所有模型收到相同的角色、评分标准、JSON schema 与语言规则 |
+| 决策词规整 | `llm/normalize.py::normalize_decision` | 中英文同义词（“批准”/“LGTM”/“approve”…）映射到固定五决策词表，治理语义不随措辞漂移 |
+| 置信度校准 | `llm/normalize.py::normalize_confidence` | 0-100、0-10、“high/高” 等任意口径统一压到 [0,1] |
+| 契约修复 + 确定性兜底 | `llm/agent.py::LLMAgent` | 模型输出不合法时先触发一轮修复重试，仍失败则回退到确定性 DemoAgent 行为，运行永不中断、决策永不越界 |
+| 模型无关 Token 计量 | `runtime/agents.py::estimate_tokens` | Governor 的 `token_budget` 不依赖厂商 usage 上报，跨后端口径相同 |
+| 模型无关分歧度 | `governance/consensus.py` | Jaccard 距离只看文本，不看模型风格 |
+| 调用缓存 | `llm/provider.py::CachedProvider` | 相同提示词只请求一次，回放/重跑结果稳定且省成本 |
+| 传输重试 | `llm/provider.py::OpenAICompatProvider` | 429/5xx 等瞬时错误自动退避重试，效率不因单次抖动而崩 |
+
+无法解析的评审输出会落入保守默认（Cathedral → `escalate`，Bazaar → `challenge`），因此坏输出只会收紧权限而不会放宽权限。
+
 ## 能力边界
 
 能力是字符串，工具声明自己需要的唯一能力：
@@ -249,6 +290,7 @@ Code/
     models.py             拓扑与 Governorship 数据模型
     cli.py                命令行
     governance/           Governor 与共识度量
+    llm/                  跨模型 LLM 适配层（契约、归一化、Provider）
     runtime/              Agent、工具、审批、执行、快照、回放
     topology/             YAML 子集、JSON、Python DSL
   examples/
@@ -256,15 +298,16 @@ Code/
     high_risk.yaml        全 Cathedral
     dsl_topology.py       Python DSL
     custom_agents.py      自定义 FunctionAgent
+    llm_agents.py         真实大模型接入（OpenAI 兼容 / 离线确定性）
   tests/
   docs/architecture.md
 ```
 
 ## 限制与下一步
 
-- 演示 Agent 是确定性的本地占位实现，不调用 LLM；接入真实模型时替换 Agent 的 `propose/review/revise` 即可。
+- 接入真实模型：`build_llm_registry(topology)` 会将拓扑内所有 Agent 包装为 `LLMAgent`，默认经 `NARTHEX_LLM_*` 环境变量选择后端；未设置时自动退回离线确定性后端。
 - 文本分歧度使用 Jaccard 距离，适合演示和可解释基线；生产环境可替换为 embedding 距离或独立评审 Agent。
-- 当前回放是“重新执行分支点及后续节点”，不会序列化任意 Python 对象；自定义 Agent 需要保持确定性或自行接入外部状态存储。
+- 当前回放是“重新执行分支点及后续节点”，不会序列化任意 Python 对象；LLM Agent 通过提示词缓存保证回放确定性。
 - 审批 Provider 当前提供自动/录制实现；接入人工审批时实现 `ApprovalProvider.decide` 即可。
 
 ## License

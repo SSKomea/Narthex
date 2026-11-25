@@ -36,6 +36,10 @@ flowchart TD
 | `topology/loader.py` | YAML / JSON / Python DSL 统一加载 |
 | `governance/governor.py` | 固定优先级的治理模式决策 |
 | `governance/consensus.py` | 可替换的共识与分歧度量 |
+| `llm/provider.py` | 模型无关 Provider 抽象（OpenAI 兼容 / 离线确定性 / 缓存） |
+| `llm/contracts.py` | 统一提示词契约与响应解析 |
+| `llm/normalize.py` | 决策同义词归一、置信度校准、健壮 JSON 提取 |
+| `llm/agent.py` | `LLMAgent`：修复重试、确定性兜底、模型无关 Token 计量 |
 | `capabilities.py` | Cathedral / Bazaar 的能力收窄规则 |
 | `runtime/agents.py` | Agent 协议、函数适配器、确定性演示 Agent |
 | `runtime/tools.py` | 工具注册、能力检查、副作用执行 |
@@ -202,6 +206,33 @@ class MyAgent:
 - 能力受限的 `ToolInvoker`
 - 上游节点结果视图
 - 当前协商轮次
+
+### 跨大模型一致性（LLM 适配层）
+
+`build_llm_registry(topology)` 会把拓扑内全部 Agent 包装为 `LLMAgent`，其一致性策略如下：
+
+```mermaid
+flowchart LR
+    Ctx[AgentContext / ReviewContext] --> P1[统一提示词契约 contracts.py]
+    P1 --> Provider[Provider: OpenAI 兼容 / Ollama / 离线确定性]
+    Provider --> Raw[任意风格的原始输出]
+    Raw --> N1[JSON 提取 + 全角引号容错]
+    N1 --> N2[决策同义词归一 normalize_decision]
+    N2 --> N3[置信度校准 normalize_confidence]
+    N3 -->|合法| Canon[规范 AgentOutput / Review]
+    N3 -->|不合法| Repair[修复重试一轮]
+    Repair -->|仍失败| FB[确定性 DemoAgent 兜底]
+    Canon --> Engine[执行引擎：Governor / 共识 / 审批不受后端影响]
+    FB --> Engine
+```
+
+关键不变量：
+
+1. **治理语义不变**：无论后端如何措辞，`normalize_decision` 只产出 `endorse / challenge / approve / deny / escalate` 五个规范决策；解析失败时 Bazaar 落到 `challenge`、Cathedral 落到 `escalate`（只收紧、不放宽权限）。
+2. **预算口径不变**：`LLMAgent` 忽略厂商 usage 上报，始终用 `estimate_tokens(content)` 计入 Governor 的 `token_budget`。
+3. **共识口径不变**：分歧度使用 Jaccard 距离，与模型风格无关。
+4. **运行不中断**：契约破坏先修复重试，仍失败回退确定性 Agent；工具副作用仍受能力边界与审批门约束。
+5. **效率稳定**：`CachedProvider` 对相同提示词去重（回放/重跑零成本、结果确定），`OpenAICompatProvider` 对 429/5xx 自动退避重试。
 
 ## 10. 安全边界
 
